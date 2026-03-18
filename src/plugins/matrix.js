@@ -10,6 +10,28 @@ import { createPlugin } from 'coralite'
  * @param {string} [config.baseUrl='https://matrix.org']
  */
 export default function ({ baseUrl = 'https://matrix.org' } = {}) {
+  const withRetry = async (action, maxAttempts = 5) => {
+    let attempt = 0
+    while (attempt < maxAttempts) {
+      try {
+        return await action()
+      } catch (error) {
+        const isRetryable =
+          (error.message && (error.message.includes('unconfigured room') || error.message.includes('Cannot encrypt'))) ||
+          error.name === 'UnknownDeviceError'
+
+        if (isRetryable && attempt < maxAttempts - 1) {
+          attempt++
+          const delay = attempt * 1000 // 1s, 2s, 3s, 4s, 5s
+          console.warn(`Encryption error detected. Retrying in ${delay}ms (Attempt ${attempt}/${maxAttempts})...`, error)
+          await new Promise(resolve => setTimeout(resolve, delay))
+        } else {
+          throw error
+        }
+      }
+    }
+  }
+
   return createPlugin({
     name: 'matrix-plugin',
     client: {
@@ -357,7 +379,7 @@ export default function ({ baseUrl = 'https://matrix.org' } = {}) {
             body: messageText
           }
 
-          return await client.sendEvent(roomId, 'm.room.message', content, '')
+          return await withRetry(() => client.sendEvent(roomId, 'm.room.message', content, ''))
         },
 
         createEncryptedRoom: (context) => async (name, inviteUserId) => {
@@ -502,7 +524,7 @@ export default function ({ baseUrl = 'https://matrix.org' } = {}) {
             info: torrentPayload
           }
 
-          return await client.sendEvent(roomId, 'm.room.message', content, '')
+          return await withRetry(() => client.sendEvent(roomId, 'm.room.message', content, ''))
         },
 
         placeCall: (context) => async (roomId, type) => {
@@ -511,11 +533,13 @@ export default function ({ baseUrl = 'https://matrix.org' } = {}) {
 
           const call = client.createCall(roomId)
 
-          if (type === 'video') {
-            await call.placeVideoCall()
-          } else {
-            await call.placeVoiceCall()
-          }
+          await withRetry(async () => {
+            if (type === 'video') {
+              await call.placeVideoCall()
+            } else {
+              await call.placeVoiceCall()
+            }
+          })
 
           return call
         },
